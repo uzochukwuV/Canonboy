@@ -1,22 +1,28 @@
 openapi: 3.1.0
 info:
-  # Do not change the title, if the title changes, the import paths will be broken
   title: Api
   version: 0.1.0
-  description: API specification
+  description: NBA Prediction Market Trading Bot API
 servers:
   - url: /api
     description: Base API path
 tags:
   - name: health
     description: Health operations
+  - name: markets
+    description: NBA prediction market data
+  - name: signals
+    description: Trading signals and analysis
+  - name: trades
+    description: Simulated trade history
+  - name: bot
+    description: Bot control and status
 paths:
   /healthz:
     get:
       operationId: healthCheck
       tags: [health]
       summary: Health check
-      description: Returns server health status
       responses:
         "200":
           description: Healthy
@@ -24,6 +30,196 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/HealthStatus"
+
+  /markets:
+    get:
+      operationId: getMarkets
+      tags: [markets]
+      summary: Get all tracked NBA prediction markets
+      parameters:
+        - name: active
+          in: query
+          schema:
+            type: boolean
+      responses:
+        "200":
+          description: List of markets
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/Market"
+
+  /markets/{id}:
+    get:
+      operationId: getMarket
+      tags: [markets]
+      summary: Get a single market by ID
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+      responses:
+        "200":
+          description: Market details
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Market"
+        "404":
+          description: Not found
+
+  /markets/summary:
+    get:
+      operationId: getMarketsSummary
+      tags: [markets]
+      summary: Get market summary stats
+      responses:
+        "200":
+          description: Market summary
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MarketSummary"
+
+  /signals:
+    get:
+      operationId: getSignals
+      tags: [signals]
+      summary: Get recent trading signals
+      parameters:
+        - name: limit
+          in: query
+          schema:
+            type: integer
+        - name: strategyType
+          in: query
+          schema:
+            type: string
+      responses:
+        "200":
+          description: List of signals
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/Signal"
+
+  /signals/latest:
+    get:
+      operationId: getLatestSignals
+      tags: [signals]
+      summary: Get latest signal per market (dashboard summary)
+      responses:
+        "200":
+          description: Latest signals
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/Signal"
+
+  /trades:
+    get:
+      operationId: getTrades
+      tags: [trades]
+      summary: Get simulated trade history
+      parameters:
+        - name: limit
+          in: query
+          schema:
+            type: integer
+        - name: status
+          in: query
+          schema:
+            type: string
+      responses:
+        "200":
+          description: List of trades
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/Trade"
+
+  /trades/pnl:
+    get:
+      operationId: getPnlSummary
+      tags: [trades]
+      summary: Get P&L summary and equity curve data
+      responses:
+        "200":
+          description: P&L summary
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PnlSummary"
+
+  /bot/status:
+    get:
+      operationId: getBotStatus
+      tags: [bot]
+      summary: Get bot running status and config
+      responses:
+        "200":
+          description: Bot status
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/BotStatus"
+
+  /bot/start:
+    post:
+      operationId: startBot
+      tags: [bot]
+      summary: Start the trading bot simulation
+      responses:
+        "200":
+          description: Bot started
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/BotStatus"
+
+  /bot/stop:
+    post:
+      operationId: stopBot
+      tags: [bot]
+      summary: Stop the trading bot simulation
+      responses:
+        "200":
+          description: Bot stopped
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/BotStatus"
+
+  /bot/logs:
+    get:
+      operationId: getBotLogs
+      tags: [bot]
+      summary: Get recent bot activity logs
+      parameters:
+        - name: limit
+          in: query
+          schema:
+            type: integer
+      responses:
+        "200":
+          description: Bot logs
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/BotLog"
+
 components:
   schemas:
     HealthStatus:
@@ -34,3 +230,262 @@ components:
       required:
         - status
 
+    Market:
+      type: object
+      properties:
+        id:
+          type: integer
+        polymarketId:
+          type: string
+        question:
+          type: string
+        teamA:
+          type: string
+        teamB:
+          type: ["string", "null"]
+        marketType:
+          type: string
+          description: "series_winner | game_winner | champion | conference"
+        yesPrice:
+          type: number
+        noPrice:
+          type: number
+        volume:
+          type: number
+        isActive:
+          type: boolean
+        endDate:
+          type: ["string", "null"]
+        createdAt:
+          type: string
+        updatedAt:
+          type: string
+      required:
+        - id
+        - polymarketId
+        - question
+        - teamA
+        - teamB
+        - marketType
+        - yesPrice
+        - noPrice
+        - volume
+        - isActive
+        - endDate
+        - createdAt
+        - updatedAt
+
+    MarketSummary:
+      type: object
+      properties:
+        totalMarkets:
+          type: integer
+        activeMarkets:
+          type: integer
+        totalVolume:
+          type: number
+        avgEdge:
+          type: number
+        topOpportunity:
+          type: ["string", "null"]
+      required:
+        - totalMarkets
+        - activeMarkets
+        - totalVolume
+        - avgEdge
+        - topOpportunity
+
+    Signal:
+      type: object
+      properties:
+        id:
+          type: integer
+        marketId:
+          type: integer
+        marketQuestion:
+          type: string
+        strategyType:
+          type: string
+          description: "series_arbitrage | momentum | cross_market | nba_stats"
+        direction:
+          type: string
+          description: "YES | NO"
+        edge:
+          type: number
+          description: "Detected edge percentage (0-1)"
+        confidence:
+          type: number
+          description: "Model confidence (0-1)"
+        currentPrice:
+          type: number
+        fairValueEstimate:
+          type: number
+        nbaDataPoint:
+          type: ["string", "null"]
+          description: "NBA stat that drove the signal"
+        status:
+          type: string
+          description: "pending | executed | expired | rejected"
+        createdAt:
+          type: string
+      required:
+        - id
+        - marketId
+        - marketQuestion
+        - strategyType
+        - direction
+        - edge
+        - confidence
+        - currentPrice
+        - fairValueEstimate
+        - nbaDataPoint
+        - status
+        - createdAt
+
+    Trade:
+      type: object
+      properties:
+        id:
+          type: integer
+        signalId:
+          type: ["integer", "null"]
+        marketId:
+          type: integer
+        marketQuestion:
+          type: string
+        direction:
+          type: string
+        entryPrice:
+          type: number
+        exitPrice:
+          type: ["number", "null"]
+        size:
+          type: number
+          description: "USDC amount"
+        kellyFraction:
+          type: number
+        pnl:
+          type: ["number", "null"]
+        pnlPercent:
+          type: ["number", "null"]
+        status:
+          type: string
+          description: "open | closed | cancelled"
+        openedAt:
+          type: string
+        closedAt:
+          type: ["string", "null"]
+      required:
+        - id
+        - signalId
+        - marketId
+        - marketQuestion
+        - direction
+        - entryPrice
+        - exitPrice
+        - size
+        - kellyFraction
+        - pnl
+        - pnlPercent
+        - status
+        - openedAt
+        - closedAt
+
+    PnlSummary:
+      type: object
+      properties:
+        totalPnl:
+          type: number
+        totalPnlPercent:
+          type: number
+        winRate:
+          type: number
+        totalTrades:
+          type: integer
+        openTrades:
+          type: integer
+        closedTrades:
+          type: integer
+        bankroll:
+          type: number
+        startingBankroll:
+          type: number
+        equityCurve:
+          type: array
+          items:
+            $ref: "#/components/schemas/EquityPoint"
+      required:
+        - totalPnl
+        - totalPnlPercent
+        - winRate
+        - totalTrades
+        - openTrades
+        - closedTrades
+        - bankroll
+        - startingBankroll
+        - equityCurve
+
+    EquityPoint:
+      type: object
+      properties:
+        timestamp:
+          type: string
+        bankroll:
+          type: number
+        pnl:
+          type: number
+      required:
+        - timestamp
+        - bankroll
+        - pnl
+
+    BotStatus:
+      type: object
+      properties:
+        isRunning:
+          type: boolean
+        strategy:
+          type: string
+        bankroll:
+          type: number
+        scanIntervalSeconds:
+          type: integer
+        lastScanAt:
+          type: ["string", "null"]
+        totalSignalsGenerated:
+          type: integer
+        totalTradesExecuted:
+          type: integer
+        uptime:
+          type: ["integer", "null"]
+          description: "Seconds since start"
+      required:
+        - isRunning
+        - strategy
+        - bankroll
+        - scanIntervalSeconds
+        - lastScanAt
+        - totalSignalsGenerated
+        - totalTradesExecuted
+        - uptime
+
+    BotLog:
+      type: object
+      properties:
+        id:
+          type: integer
+        level:
+          type: string
+          description: "info | warn | error | signal | trade"
+        message:
+          type: string
+        details:
+          type: ["string", "null"]
+        createdAt:
+          type: string
+      required:
+        - id
+        - level
+        - message
+        - details
+        - createdAt

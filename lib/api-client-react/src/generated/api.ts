@@ -27,12 +27,15 @@ import type {
   Market,
   MarketSummary,
   PnlSummary,
+  ReadinessResult,
   Signal,
+  StartBot400,
+  StartBotBody,
   Trade,
 } from "./api.schemas";
 
 import { customFetch } from "../custom-fetch";
-import type { ErrorType } from "../custom-fetch";
+import type { ErrorType, BodyType } from "../custom-fetch";
 
 type AwaitedInput<T> = PromiseLike<T> | T;
 
@@ -783,34 +786,39 @@ export function useGetBotStatus<
 }
 
 /**
- * @summary Start the trading bot simulation
+ * @summary Start the trading bot
  */
 export const getStartBotUrl = () => {
   return `/api/bot/start`;
 };
 
-export const startBot = async (options?: RequestInit): Promise<BotStatus> => {
+export const startBot = async (
+  startBotBody?: StartBotBody,
+  options?: RequestInit,
+): Promise<BotStatus> => {
   return customFetch<BotStatus>(getStartBotUrl(), {
     ...options,
     method: "POST",
+    headers: { "Content-Type": "application/json", ...options?.headers },
+    body: JSON.stringify(startBotBody),
   });
 };
 
 export const getStartBotMutationOptions = <
-  TError = ErrorType<unknown>,
+  TError = ErrorType<StartBot400>,
   TContext = unknown,
 >(options?: {
   mutation?: UseMutationOptions<
     Awaited<ReturnType<typeof startBot>>,
     TError,
-    void,
+    { data: BodyType<StartBotBody> },
     TContext
   >;
   request?: SecondParameter<typeof customFetch>;
 }): UseMutationOptions<
   Awaited<ReturnType<typeof startBot>>,
   TError,
-  void,
+  { data: BodyType<StartBotBody> },
   TContext
 > => {
   const mutationKey = ["startBot"];
@@ -824,9 +832,11 @@ export const getStartBotMutationOptions = <
 
   const mutationFn: MutationFunction<
     Awaited<ReturnType<typeof startBot>>,
-    void
-  > = () => {
-    return startBot(requestOptions);
+    { data: BodyType<StartBotBody> }
+  > = (props) => {
+    const { data } = props ?? {};
+
+    return startBot(data, requestOptions);
   };
 
   return { mutationFn, ...mutationOptions };
@@ -835,34 +845,34 @@ export const getStartBotMutationOptions = <
 export type StartBotMutationResult = NonNullable<
   Awaited<ReturnType<typeof startBot>>
 >;
-
-export type StartBotMutationError = ErrorType<unknown>;
+export type StartBotMutationBody = BodyType<StartBotBody>;
+export type StartBotMutationError = ErrorType<StartBot400>;
 
 /**
- * @summary Start the trading bot simulation
+ * @summary Start the trading bot
  */
 export const useStartBot = <
-  TError = ErrorType<unknown>,
+  TError = ErrorType<StartBot400>,
   TContext = unknown,
 >(options?: {
   mutation?: UseMutationOptions<
     Awaited<ReturnType<typeof startBot>>,
     TError,
-    void,
+    { data: BodyType<StartBotBody> },
     TContext
   >;
   request?: SecondParameter<typeof customFetch>;
 }): UseMutationResult<
   Awaited<ReturnType<typeof startBot>>,
   TError,
-  void,
+  { data: BodyType<StartBotBody> },
   TContext
 > => {
   return useMutation(getStartBotMutationOptions(options));
 };
 
 /**
- * @summary Stop the trading bot simulation
+ * @summary Stop the trading bot
  */
 export const getStopBotUrl = () => {
   return `/api/bot/stop`;
@@ -918,7 +928,7 @@ export type StopBotMutationResult = NonNullable<
 export type StopBotMutationError = ErrorType<unknown>;
 
 /**
- * @summary Stop the trading bot simulation
+ * @summary Stop the trading bot
  */
 export const useStopBot = <
   TError = ErrorType<unknown>,
@@ -939,6 +949,81 @@ export const useStopBot = <
 > => {
   return useMutation(getStopBotMutationOptions(options));
 };
+
+/**
+ * @summary Check Canon/Polymarket readiness for live trading
+ */
+export const getGetBotReadinessUrl = () => {
+  return `/api/bot/readiness`;
+};
+
+export const getBotReadiness = async (
+  options?: RequestInit,
+): Promise<ReadinessResult> => {
+  return customFetch<ReadinessResult>(getGetBotReadinessUrl(), {
+    ...options,
+    method: "GET",
+  });
+};
+
+export const getGetBotReadinessQueryKey = () => {
+  return [`/api/bot/readiness`] as const;
+};
+
+export const getGetBotReadinessQueryOptions = <
+  TData = Awaited<ReturnType<typeof getBotReadiness>>,
+  TError = ErrorType<ReadinessResult>,
+>(options?: {
+  query?: UseQueryOptions<
+    Awaited<ReturnType<typeof getBotReadiness>>,
+    TError,
+    TData
+  >;
+  request?: SecondParameter<typeof customFetch>;
+}) => {
+  const { query: queryOptions, request: requestOptions } = options ?? {};
+
+  const queryKey = queryOptions?.queryKey ?? getGetBotReadinessQueryKey();
+
+  const queryFn: QueryFunction<Awaited<ReturnType<typeof getBotReadiness>>> = ({
+    signal,
+  }) => getBotReadiness({ signal, ...requestOptions });
+
+  return { queryKey, queryFn, ...queryOptions } as UseQueryOptions<
+    Awaited<ReturnType<typeof getBotReadiness>>,
+    TError,
+    TData
+  > & { queryKey: QueryKey };
+};
+
+export type GetBotReadinessQueryResult = NonNullable<
+  Awaited<ReturnType<typeof getBotReadiness>>
+>;
+export type GetBotReadinessQueryError = ErrorType<ReadinessResult>;
+
+/**
+ * @summary Check Canon/Polymarket readiness for live trading
+ */
+
+export function useGetBotReadiness<
+  TData = Awaited<ReturnType<typeof getBotReadiness>>,
+  TError = ErrorType<ReadinessResult>,
+>(options?: {
+  query?: UseQueryOptions<
+    Awaited<ReturnType<typeof getBotReadiness>>,
+    TError,
+    TData
+  >;
+  request?: SecondParameter<typeof customFetch>;
+}): UseQueryResult<TData, TError> & { queryKey: QueryKey } {
+  const queryOptions = getGetBotReadinessQueryOptions(options);
+
+  const query = useQuery(queryOptions) as UseQueryResult<TData, TError> & {
+    queryKey: QueryKey;
+  };
+
+  return { ...query, queryKey: queryOptions.queryKey };
+}
 
 /**
  * @summary Get recent bot activity logs

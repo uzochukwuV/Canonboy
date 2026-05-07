@@ -5,9 +5,11 @@
  * NBA Prediction Market Trading Bot API
  * OpenAPI spec version: 0.1.0
  */
+import type { BotStatusExecutionMode } from "./botStatusExecutionMode";
 
 export interface BotStatus {
   isRunning: boolean;
+  executionMode: BotStatusExecutionMode;
   strategy: string;
   bankroll: number;
   scanIntervalSeconds: number;

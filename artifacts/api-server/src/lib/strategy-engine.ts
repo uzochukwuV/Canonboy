@@ -1,5 +1,5 @@
 import { db, marketsTable, signalsTable, tradesTable, botLogsTable, botStateTable } from "@workspace/db";
-import { eq, desc, sql } from "drizzle-orm";
+import { eq, desc, sql, and } from "drizzle-orm";
 import { logger } from "./logger";
 import { syncPolymarketMarkets } from "./polymarket";
 import {
@@ -9,6 +9,18 @@ import {
   remainingSeriesWinProb,
   type NBAPlayoffState,
 } from "./nba-stats";
+import {
+  ensureSidecar,
+  ensureWallet,
+  getOnboardStatus,
+  getUsdceBalance,
+  createOrder,
+  cancelOrder,
+  getLivePositions,
+  killAllOrders,
+  LIVE_MAX_POSITION_USD,
+  LIVE_MAX_OPEN_TRADES,
+} from "./canon-executor";
 
 // ─── Config ───────────────────────────────────────────────────────────────────
 const STARTING_BANKROLL = 1000;
@@ -338,7 +350,10 @@ export async function scanMarketsAndGenerateSignals(): Promise<void> {
     .where(eq(botStateTable.id, 1));
 }
 
-// ─── Paper Trade Execution ────────────────────────────────────────────────────
+// ─── Execution Mode State ─────────────────────────────────────────────────────
+let currentExecutionMode: "paper" | "live" = "paper";
+
+// ─── Trade Execution ──────────────────────────────────────────────────────────
 export async function executePendingSignals(): Promise<void> {
   const pendingSignals = await db
     .select()
@@ -351,6 +366,19 @@ export async function executePendingSignals(): Promise<void> {
 
   const [botState] = await db.select().from(botStateTable).where(eq(botStateTable.id, 1));
   const bankroll = botState?.bankroll ?? STARTING_BANKROLL;
+  const isLive = currentExecutionMode === "live";
+
+  if (isLive) {
+    // Count currently open live trades to enforce position cap
+    const openLive = await db
+      .select()
+      .from(tradesTable)
+      .where(and(eq(tradesTable.status, "open"), eq(tradesTable.executionMode, "live")));
+    if (openLive.length >= LIVE_MAX_OPEN_TRADES) {
+      await addLog("info", `Live trade cap reached (${openLive.length}/${LIVE_MAX_OPEN_TRADES} open) — skipping new signals`);
+      return;
+    }
+  }
 
   let executed = 0;
   for (const signal of pendingSignals) {
@@ -359,31 +387,92 @@ export async function executePendingSignals(): Promise<void> {
       continue;
     }
 
-    const size = kellySize(signal.edge, signal.currentPrice, bankroll, signal.direction as "YES" | "NO");
+    const paperSize = kellySize(signal.edge, signal.currentPrice, bankroll, signal.direction as "YES" | "NO");
+    const size = isLive ? Math.min(paperSize, LIVE_MAX_POSITION_USD) : paperSize;
 
-    // Paper trade — record at the LIVE Polymarket price fetched during this scan
-    await db.insert(tradesTable).values({
-      signalId: signal.id,
-      marketId: signal.marketId,
-      marketQuestion: signal.marketQuestion,
-      direction: signal.direction,
-      entryPrice: signal.currentPrice,
-      exitPrice: null,
-      size,
-      kellyFraction: KELLY_FRACTION,
-      pnl: null,
-      pnlPercent: null,
-      status: "open",
-    });
+    if (isLive) {
+      // Resolve the CLOB token ID for this signal's market and direction
+      const [market] = await db.select().from(marketsTable).where(eq(marketsTable.id, signal.marketId));
+      const tokenId = signal.direction === "YES" ? market?.yesTokenId : market?.noTokenId;
 
-    await db.update(signalsTable).set({ status: "executed" }).where(eq(signalsTable.id, signal.id));
+      if (!tokenId) {
+        await addLog("warn", `Skipping live signal — no CLOB token ID for market ${signal.marketId} (${signal.direction})`, signal.marketQuestion);
+        await db.update(signalsTable).set({ status: "rejected" }).where(eq(signalsTable.id, signal.id));
+        continue;
+      }
 
-    await addLog(
-      "trade",
-      `[PAPER] Opened: ${signal.direction} ${size.toFixed(2)} USDC @ ${(signal.currentPrice * 100).toFixed(1)}% — "${signal.marketQuestion.slice(0, 50)}..."`,
-      `Edge: ${(signal.edge * 100).toFixed(1)}% | Kelly size: ${size.toFixed(2)} USDC | Strategy: ${signal.strategyType}`
-    );
-    executed++;
+      try {
+        const order = await createOrder({
+          tokenId,
+          side: "buy",
+          size,
+          price: signal.currentPrice,
+          marketId: market?.conditionId ?? undefined,
+          orderType: "limit",
+        });
+
+        await db.insert(tradesTable).values({
+          signalId: signal.id,
+          marketId: signal.marketId,
+          marketQuestion: signal.marketQuestion,
+          direction: signal.direction,
+          entryPrice: signal.currentPrice,
+          exitPrice: null,
+          size,
+          kellyFraction: KELLY_FRACTION,
+          pnl: null,
+          pnlPercent: null,
+          status: "open",
+          executionMode: "live",
+          clobOrderId: order.id,
+          clobTokenId: tokenId,
+        });
+
+        await db.update(signalsTable).set({ status: "executed" }).where(eq(signalsTable.id, signal.id));
+
+        await addLog(
+          "trade",
+          `[LIVE] Opened: ${signal.direction} ${size.toFixed(2)} USDC @ ${(signal.currentPrice * 100).toFixed(1)}% — "${signal.marketQuestion.slice(0, 50)}..."`,
+          `Edge: ${(signal.edge * 100).toFixed(1)}% | CLOB order: ${order.id} | Token: ${tokenId.slice(0, 16)}... | Strategy: ${signal.strategyType}`
+        );
+        executed++;
+
+        // Enforce per-loop cap
+        const openLive = await db
+          .select()
+          .from(tradesTable)
+          .where(and(eq(tradesTable.status, "open"), eq(tradesTable.executionMode, "live")));
+        if (openLive.length >= LIVE_MAX_OPEN_TRADES) break;
+      } catch (err) {
+        await addLog("error", `[LIVE] Order failed for signal ${signal.id}: ${err instanceof Error ? err.message : String(err)}`);
+        await db.update(signalsTable).set({ status: "rejected" }).where(eq(signalsTable.id, signal.id));
+      }
+    } else {
+      // Paper trade — record at the LIVE Polymarket price fetched during this scan
+      await db.insert(tradesTable).values({
+        signalId: signal.id,
+        marketId: signal.marketId,
+        marketQuestion: signal.marketQuestion,
+        direction: signal.direction,
+        entryPrice: signal.currentPrice,
+        exitPrice: null,
+        size,
+        kellyFraction: KELLY_FRACTION,
+        pnl: null,
+        pnlPercent: null,
+        status: "open",
+        executionMode: "paper",
+      });
+
+      await db.update(signalsTable).set({ status: "executed" }).where(eq(signalsTable.id, signal.id));
+
+      await addLog(
+        "trade",
+        `[PAPER] Opened: ${signal.direction} ${size.toFixed(2)} USDC @ ${(signal.currentPrice * 100).toFixed(1)}% — "${signal.marketQuestion.slice(0, 50)}..."`,
+        `Edge: ${(signal.edge * 100).toFixed(1)}% | Kelly size: ${size.toFixed(2)} USDC | Strategy: ${signal.strategyType}`
+      );
+      executed++;
+    }
   }
 
   if (executed > 0) {
@@ -393,13 +482,7 @@ export async function executePendingSignals(): Promise<void> {
   }
 }
 
-// ─── Real-Price Trade Resolution ──────────────────────────────────────────────
-/**
- * Instead of random resolution, we check open trades against the CURRENT
- * live Polymarket price for that market. If the price has moved enough
- * in our direction → take profit. Against us → stop loss.
- * Old trades (>12 hours) that haven't moved → expire.
- */
+// ─── Mark-to-Market ───────────────────────────────────────────────────────────
 export async function markToMarket(): Promise<void> {
   const openTrades = await db
     .select()
@@ -408,8 +491,19 @@ export async function markToMarket(): Promise<void> {
 
   if (openTrades.length === 0) return;
 
-  // Get current market prices
-  const marketIds = [...new Set(openTrades.map((t) => t.marketId))];
+  // For live trades, fetch real positions from Canon
+  let livePositionMap = new Map<string, { currentPrice: number; unrealizedPnL: number }>();
+  if (currentExecutionMode === "live") {
+    try {
+      const { positions } = await getLivePositions();
+      for (const pos of positions) {
+        livePositionMap.set(pos.outcomeId, { currentPrice: pos.currentPrice, unrealizedPnL: pos.unrealizedPnL });
+      }
+    } catch (err) {
+      await addLog("warn", `Failed to fetch live positions for mark-to-market: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  }
+
   const currentMarkets = await db
     .select()
     .from(marketsTable)
@@ -418,64 +512,85 @@ export async function markToMarket(): Promise<void> {
   const priceMap = new Map(currentMarkets.map((m) => [m.id, m]));
 
   for (const trade of openTrades) {
+    const isLiveTrade = trade.executionMode === "live";
     const market = priceMap.get(trade.marketId);
     if (!market) continue;
 
-    const currentPrice = trade.direction === "YES" ? market.yesPrice : market.noPrice;
-    const entryPrice = trade.entryPrice;
+    let currentPrice: number;
+    if (isLiveTrade && trade.clobTokenId && livePositionMap.has(trade.clobTokenId)) {
+      currentPrice = livePositionMap.get(trade.clobTokenId)!.currentPrice;
+    } else {
+      currentPrice = trade.direction === "YES" ? market.yesPrice : market.noPrice;
+    }
 
-    // Price move relative to entry
+    const entryPrice = trade.entryPrice;
     const priceDelta = currentPrice - entryPrice;
     const priceMoveInOurFavor = trade.direction === "YES" ? priceDelta : -priceDelta;
 
     let shouldClose = false;
     let closeReason = "";
 
-    // Take profit
     if (priceMoveInOurFavor >= TAKE_PROFIT_PCT) {
       shouldClose = true;
-      closeReason = `Take profit triggered: +${(priceMoveInOurFavor * 100).toFixed(1)}% price move in trade direction`;
+      closeReason = `Take profit triggered: +${(priceMoveInOurFavor * 100).toFixed(1)}% price move`;
     }
 
-    // Stop loss
     if (priceMoveInOurFavor <= -STOP_LOSS_PCT) {
       shouldClose = true;
-      closeReason = `Stop loss triggered: ${(priceMoveInOurFavor * 100).toFixed(1)}% adverse price move`;
+      closeReason = `Stop loss triggered: ${(priceMoveInOurFavor * 100).toFixed(1)}% adverse move`;
     }
 
-    // Age-based expiry (market not moving — 6 hours for paper trades)
+    // Age out: 6h for paper, 48h for live (prediction markets are long-horizon)
     const ageHours = (Date.now() - trade.openedAt.getTime()) / 3600000;
-    if (ageHours > 6 && !shouldClose) {
+    const maxAgeHours = isLiveTrade ? 48 : 6;
+    if (ageHours > maxAgeHours && !shouldClose) {
       shouldClose = true;
-      closeReason = `Position aged out (${ageHours.toFixed(1)}h) with no trigger — closing at market`;
+      closeReason = `Position aged out (${ageHours.toFixed(1)}h)`;
     }
 
     if (shouldClose) {
       const exitPrice = currentPrice;
-      // P&L: if YES, we profit when price goes up (bought at entry, sell at exit)
-      // P&L = size × (exitPrice / entryPrice - 1) for YES
-      // P&L = size × (entryPrice / exitPrice - 1) effectively for NO
+
+      if (isLiveTrade && trade.clobTokenId) {
+        // Place a sell order to close the live position
+        try {
+          await createOrder({
+            tokenId: trade.clobTokenId,
+            side: "sell",
+            size: trade.size,
+            price: exitPrice,
+            orderType: "limit",
+          });
+        } catch (err) {
+          await addLog("warn", `Live close order failed for trade ${trade.id}: ${err instanceof Error ? err.message : String(err)}`);
+          // Still mark closed in DB — position may have resolved naturally
+        }
+      }
+
       let pnl: number;
       if (trade.direction === "YES") {
         pnl = trade.size * (exitPrice - entryPrice) / entryPrice;
       } else {
-        // Bet on NO: we win when yes price falls
         pnl = trade.size * (entryPrice - exitPrice) / entryPrice;
       }
       const pnlPercent = (pnl / trade.size) * 100;
       const outcome = pnl >= 0 ? "WIN" : "LOSS";
+      const modeTag = isLiveTrade ? "LIVE" : "PAPER";
 
       await db.update(tradesTable)
         .set({ exitPrice, pnl, pnlPercent, status: "closed", closedAt: new Date() })
         .where(eq(tradesTable.id, trade.id));
 
-      await db.update(botStateTable)
-        .set({ bankroll: sql`bankroll + ${pnl}` })
-        .where(eq(botStateTable.id, 1));
+      if (!isLiveTrade) {
+        // Only adjust paper bankroll — live bankroll comes from actual USDC.e balance
+        await db.update(botStateTable)
+          .set({ bankroll: sql`bankroll + ${pnl}` })
+          .where(eq(botStateTable.id, 1));
+      }
 
       await addLog(
         "trade",
-        `[PAPER] Closed [${outcome}]: ${pnl >= 0 ? "+" : ""}${pnl.toFixed(2)} USDC (${pnlPercent.toFixed(1)}%) — "${trade.marketQuestion.slice(0, 45)}..."`,
+        `[${modeTag}] Closed [${outcome}]: ${pnl >= 0 ? "+" : ""}${pnl.toFixed(2)} USDC (${pnlPercent.toFixed(1)}%) — "${trade.marketQuestion.slice(0, 45)}..."`,
         `Entry: ${(entryPrice * 100).toFixed(1)}% → Exit: ${(exitPrice * 100).toFixed(1)}% | ${closeReason}`
       );
     }
@@ -485,20 +600,55 @@ export async function markToMarket(): Promise<void> {
 // ─── Bot Lifecycle ────────────────────────────────────────────────────────────
 let botInterval: ReturnType<typeof setInterval> | null = null;
 
-export async function startBotEngine(): Promise<void> {
+export async function startBotEngine(mode: "paper" | "live" = "paper"): Promise<void> {
   if (botInterval) return;
 
+  currentExecutionMode = mode;
+
+  if (mode === "live") {
+    await addLog("info", "Live mode: verifying Canon sidecar, wallet, and Polymarket onboarding...");
+    try {
+      await ensureSidecar();
+      await addLog("info", "pmxt sidecar ready");
+    } catch (err) {
+      throw new Error(`Live mode startup: sidecar failed — ${err instanceof Error ? err.message : String(err)}`);
+    }
+    try {
+      await ensureWallet();
+      await addLog("info", "Canon wallet ready");
+    } catch (err) {
+      throw new Error(`Live mode startup: wallet check failed — ${err instanceof Error ? err.message : String(err)}`);
+    }
+    try {
+      const status = await getOnboardStatus();
+      if (!status.funderDeployed || !status.approvalsReady || !status.credsReady) {
+        throw new Error(`Polymarket onboarding incomplete: funder=${String(status.funderDeployed)} approvals=${String(status.approvalsReady)} creds=${String(status.credsReady)}`);
+      }
+      const balance = await getUsdceBalance();
+      if (balance < 1.0) {
+        throw new Error(`Insufficient USDC.e balance: ${balance.toFixed(2)} (need ≥ 1.00)`);
+      }
+      await addLog("info", `Polymarket onboarding verified. USDC.e balance: ${balance.toFixed(2)}`);
+    } catch (err) {
+      throw new Error(`Live mode startup: onboard check failed — ${err instanceof Error ? err.message : String(err)}`);
+    }
+  }
+
   await db.update(botStateTable)
-    .set({ isRunning: true, startedAt: new Date() })
+    .set({ isRunning: true, startedAt: new Date(), executionMode: mode })
     .where(eq(botStateTable.id, 1));
 
-  await addLog("info", "Bot engine started.", "Strategy: Series Arbitrage + Cross-Market Arb + NBA Stats | Data: Polymarket CLOB (live) + ESPN Playoffs (live) | Mode: Paper trading");
+  const modeLabel = mode === "live" ? "LIVE (real USDC.e on Polymarket)" : "Paper trading";
+  await addLog(
+    "info",
+    `Bot engine started. Mode: ${modeLabel}`,
+    `Strategy: Series Arbitrage + Cross-Market Arb + NBA Stats | Data: Polymarket CLOB (live) + ESPN Playoffs (live)${mode === "live" ? ` | Max position: $${LIVE_MAX_POSITION_USD} | Max open: ${LIVE_MAX_OPEN_TRADES}` : ""}`
+  );
 
-  // Run immediately on start, then every 30 seconds
   const tick = async () => {
     try {
       await syncPolymarketMarkets();
-      await markToMarket();         // Check open trades against live prices
+      await markToMarket();
       await scanMarketsAndGenerateSignals();
       await executePendingSignals();
     } catch (err) {
@@ -507,8 +657,8 @@ export async function startBotEngine(): Promise<void> {
     }
   };
 
-  await tick(); // run immediately
-  botInterval = setInterval(tick, 30000); // then every 30s
+  await tick();
+  botInterval = setInterval(tick, 30000);
 }
 
 export async function stopBotEngine(): Promise<void> {
@@ -517,13 +667,28 @@ export async function stopBotEngine(): Promise<void> {
     botInterval = null;
   }
 
+  if (currentExecutionMode === "live") {
+    try {
+      const { cancelled } = await killAllOrders();
+      await addLog("info", `Live mode shutdown: cancelled ${cancelled} open order(s)`);
+    } catch (err) {
+      await addLog("warn", `killAllOrders on shutdown failed: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  }
+
   await db.update(botStateTable)
     .set({ isRunning: false, startedAt: null })
     .where(eq(botStateTable.id, 1));
 
-  await addLog("info", "Bot engine stopped. All open positions remain tracked in paper account.");
+  const modeLabel = currentExecutionMode === "live" ? "live mode — open positions remain on Polymarket" : "paper account";
+  await addLog("info", `Bot engine stopped. Open positions tracked in ${modeLabel}.`);
+  currentExecutionMode = "paper";
 }
 
 export function isBotRunning(): boolean {
   return botInterval !== null;
+}
+
+export function getExecutionMode(): "paper" | "live" {
+  return currentExecutionMode;
 }

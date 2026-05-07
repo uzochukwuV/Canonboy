@@ -103,8 +103,17 @@ export interface PnlSummary {
   equityCurve: EquityPoint[];
 }
 
+export type BotStatusExecutionMode =
+  (typeof BotStatusExecutionMode)[keyof typeof BotStatusExecutionMode];
+
+export const BotStatusExecutionMode = {
+  paper: "paper",
+  live: "live",
+} as const;
+
 export interface BotStatus {
   isRunning: boolean;
+  executionMode: BotStatusExecutionMode;
   strategy: string;
   bankroll: number;
   scanIntervalSeconds: number;
@@ -117,6 +126,16 @@ export interface BotStatus {
    * @nullable
    */
   uptime: number | null;
+}
+
+export interface ReadinessResult {
+  walletReady: boolean;
+  /** @nullable */
+  walletAddress: string | null;
+  onboardReady: boolean;
+  sidecarReady: boolean;
+  usdceBalance: number;
+  errors: string[];
 }
 
 export interface BotLog {
@@ -141,6 +160,22 @@ export type GetSignalsParams = {
 export type GetTradesParams = {
   limit?: number;
   status?: string;
+};
+
+export type StartBotBodyMode =
+  (typeof StartBotBodyMode)[keyof typeof StartBotBodyMode];
+
+export const StartBotBodyMode = {
+  paper: "paper",
+  live: "live",
+} as const;
+
+export type StartBotBody = {
+  mode?: StartBotBodyMode;
+};
+
+export type StartBot400 = {
+  error?: string;
 };
 
 export type GetBotLogsParams = {

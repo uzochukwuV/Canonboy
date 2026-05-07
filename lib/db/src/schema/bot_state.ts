@@ -5,6 +5,7 @@ import { z } from "zod/v4";
 export const botStateTable = pgTable("bot_state", {
   id: serial("id").primaryKey(),
   isRunning: boolean("is_running").notNull().default(false),
+  executionMode: text("execution_mode").notNull().default("paper"),
   strategy: text("strategy").notNull().default("series_arbitrage_nba_stats"),
   bankroll: real("bankroll").notNull().default(1000),
   scanIntervalSeconds: integer("scan_interval_seconds").notNull().default(30),

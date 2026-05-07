@@ -4,7 +4,6 @@ import { logger } from "./logger";
 
 const GAMMA_API = "https://gamma-api.polymarket.com";
 
-// Known NBA team name patterns to match against market questions
 const NBA_KEYWORDS = [
   "nba", "thunder", "celtics", "knicks", "spurs", "nuggets",
   "timberwolves", "wolves", "warriors", "lakers", "cavaliers", "cavs",
@@ -83,7 +82,6 @@ function extractTeam(question: string, pattern: "primary" | "secondary" = "prima
       matches.push(abbr);
     }
   }
-  // Dedupe
   const unique = [...new Set(matches)];
   if (pattern === "primary") return unique[0] ?? "N/A";
   return unique[1] ?? null as unknown as string;
@@ -117,6 +115,17 @@ export async function syncPolymarketMarkets(): Promise<number> {
       const yesPrice = parseFloat(prices[0] ?? "0.5");
       const noPrice = parseFloat(prices[1] ?? "0.5");
 
+      // Parse CLOB token IDs — Gamma returns ["yesTokenId", "noTokenId"]
+      let yesTokenId: string | null = null;
+      let noTokenId: string | null = null;
+      try {
+        const tokenIds = JSON.parse(m.clobTokenIds || "[]") as string[];
+        yesTokenId = tokenIds[0] ?? null;
+        noTokenId = tokenIds[1] ?? null;
+      } catch {
+        // leave null
+      }
+
       const teamA = extractTeam(m.question, "primary");
       const teamB = extractTeam(m.question, "secondary");
       const marketType = detectMarketType(m.question);
@@ -127,20 +136,31 @@ export async function syncPolymarketMarkets(): Promise<number> {
         .where(eq(marketsTable.polymarketId, m.id));
 
       if (existing.length > 0) {
-        // Update prices
+        const row = existing[0]!;
         await db.update(marketsTable)
-          .set({ yesPrice, noPrice, volume: m.volumeNum ?? 0, isActive: m.active && !m.closed })
+          .set({
+            yesPrice,
+            noPrice,
+            volume: m.volumeNum ?? 0,
+            isActive: m.active && !m.closed,
+            // Backfill token IDs and conditionId if not yet stored
+            ...(yesTokenId && !row.yesTokenId ? { yesTokenId } : {}),
+            ...(noTokenId && !row.noTokenId ? { noTokenId } : {}),
+            ...(m.conditionId && !row.conditionId ? { conditionId: m.conditionId } : {}),
+          })
           .where(eq(marketsTable.polymarketId, m.id));
       } else {
-        // Insert new market
         await db.insert(marketsTable).values({
           polymarketId: m.id,
+          conditionId: m.conditionId || null,
           question: m.question,
           teamA,
           teamB: teamB || null,
           marketType,
           yesPrice,
           noPrice,
+          yesTokenId,
+          noTokenId,
           volume: m.volumeNum ?? 0,
           isActive: m.active && !m.closed,
           endDate: m.endDate ? m.endDate.split("T")[0] : null,
@@ -155,7 +175,6 @@ export async function syncPolymarketMarkets(): Promise<number> {
   return synced;
 }
 
-// Fetch fresh price from CLOB midpoint API for a specific token
 export async function fetchLivePrice(tokenId: string): Promise<number | null> {
   try {
     const res = await fetch(`https://clob.polymarket.com/midpoint?token_id=${tokenId}`, {

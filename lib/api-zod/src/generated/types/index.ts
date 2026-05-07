@@ -8,6 +8,7 @@
 
 export * from "./botLog";
 export * from "./botStatus";
+export * from "./botStatusExecutionMode";
 export * from "./equityPoint";
 export * from "./getBotLogsParams";
 export * from "./getMarketsParams";
@@ -17,5 +18,9 @@ export * from "./healthStatus";
 export * from "./market";
 export * from "./marketSummary";
 export * from "./pnlSummary";
+export * from "./readinessResult";
 export * from "./signal";
+export * from "./startBot400";
+export * from "./startBotBody";
+export * from "./startBotBodyMode";
 export * from "./trade";

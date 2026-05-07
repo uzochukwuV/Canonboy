@@ -178,7 +178,18 @@ paths:
     post:
       operationId: startBot
       tags: [bot]
-      summary: Start the trading bot simulation
+      summary: Start the trading bot
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                mode:
+                  type: string
+                  enum: [paper, live]
+                  default: paper
       responses:
         "200":
           description: Bot started
@@ -186,12 +197,21 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/BotStatus"
+        "400":
+          description: Failed to start (e.g. live onboarding not complete)
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
 
   /bot/stop:
     post:
       operationId: stopBot
       tags: [bot]
-      summary: Stop the trading bot simulation
+      summary: Stop the trading bot
       responses:
         "200":
           description: Bot stopped
@@ -199,6 +219,25 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/BotStatus"
+
+  /bot/readiness:
+    get:
+      operationId: getBotReadiness
+      tags: [bot]
+      summary: Check Canon/Polymarket readiness for live trading
+      responses:
+        "200":
+          description: All systems ready
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ReadinessResult"
+        "503":
+          description: One or more systems not ready
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ReadinessResult"
 
   /bot/logs:
     get:
@@ -444,6 +483,9 @@ components:
       properties:
         isRunning:
           type: boolean
+        executionMode:
+          type: string
+          enum: [paper, live]
         strategy:
           type: string
         bankroll:
@@ -461,6 +503,7 @@ components:
           description: "Seconds since start"
       required:
         - isRunning
+        - executionMode
         - strategy
         - bankroll
         - scanIntervalSeconds
@@ -468,6 +511,31 @@ components:
         - totalSignalsGenerated
         - totalTradesExecuted
         - uptime
+
+    ReadinessResult:
+      type: object
+      properties:
+        walletReady:
+          type: boolean
+        walletAddress:
+          type: ["string", "null"]
+        onboardReady:
+          type: boolean
+        sidecarReady:
+          type: boolean
+        usdceBalance:
+          type: number
+        errors:
+          type: array
+          items:
+            type: string
+      required:
+        - walletReady
+        - walletAddress
+        - onboardReady
+        - sidecarReady
+        - usdceBalance
+        - errors
 
     BotLog:
       type: object

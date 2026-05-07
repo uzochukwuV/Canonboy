@@ -8,13 +8,15 @@ import {
   GetBotLogsQueryParams,
   GetBotLogsResponse,
 } from "@workspace/api-zod";
-import { startBotEngine, stopBotEngine, isBotRunning } from "../lib/strategy-engine";
+import { startBotEngine, stopBotEngine, isBotRunning, getExecutionMode } from "../lib/strategy-engine";
+import { checkReadiness } from "../lib/canon-executor";
 
 const router: IRouter = Router();
 
 function serializeBotState(state: typeof botStateTable.$inferSelect) {
   return {
     isRunning: isBotRunning(),
+    executionMode: getExecutionMode(),
     strategy: state.strategy,
     bankroll: state.bankroll,
     scanIntervalSeconds: state.scanIntervalSeconds,
@@ -36,13 +38,21 @@ router.get("/bot/status", async (_req, res): Promise<void> => {
   res.json(GetBotStatusResponse.parse(serializeBotState(state)));
 });
 
-router.post("/bot/start", async (_req, res): Promise<void> => {
-  await startBotEngine();
+router.post("/bot/start", async (req, res): Promise<void> => {
+  const body = req.body as { mode?: string } | undefined;
+  const mode = body?.mode === "live" ? "live" : "paper";
+  try {
+    await startBotEngine(mode);
+  } catch (err) {
+    res.status(400).json({ error: err instanceof Error ? err.message : String(err) });
+    return;
+  }
   const [state] = await db.select().from(botStateTable).where(eq(botStateTable.id, 1));
   res.json(StartBotResponse.parse(serializeBotState(state ?? {
     id: 1, isRunning: true, strategy: "series_arbitrage_nba_stats",
     bankroll: 1000, scanIntervalSeconds: 15, lastScanAt: null,
-    totalSignalsGenerated: 0, totalTradesExecuted: 0, startedAt: new Date(), updatedAt: new Date()
+    totalSignalsGenerated: 0, totalTradesExecuted: 0, startedAt: new Date(), updatedAt: new Date(),
+    executionMode: mode,
   })));
 });
 
@@ -52,8 +62,15 @@ router.post("/bot/stop", async (_req, res): Promise<void> => {
   res.json(StopBotResponse.parse(serializeBotState(state ?? {
     id: 1, isRunning: false, strategy: "series_arbitrage_nba_stats",
     bankroll: 1000, scanIntervalSeconds: 15, lastScanAt: null,
-    totalSignalsGenerated: 0, totalTradesExecuted: 0, startedAt: null, updatedAt: new Date()
+    totalSignalsGenerated: 0, totalTradesExecuted: 0, startedAt: null, updatedAt: new Date(),
+    executionMode: "paper",
   })));
+});
+
+router.get("/bot/readiness", async (_req, res): Promise<void> => {
+  const result = await checkReadiness();
+  const httpStatus = result.errors.length === 0 ? 200 : 503;
+  res.status(httpStatus).json(result);
 });
 
 router.get("/bot/logs", async (req, res): Promise<void> => {

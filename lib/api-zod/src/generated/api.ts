@@ -181,6 +181,7 @@ export const GetPnlSummaryResponse = zod.object({
  */
 export const GetBotStatusResponse = zod.object({
   isRunning: zod.boolean(),
+  executionMode: zod.enum(["paper", "live"]),
   strategy: zod.string(),
   bankroll: zod.number(),
   scanIntervalSeconds: zod.number(),
@@ -191,10 +192,17 @@ export const GetBotStatusResponse = zod.object({
 });
 
 /**
- * @summary Start the trading bot simulation
+ * @summary Start the trading bot
  */
+export const startBotBodyModeDefault = `paper`;
+
+export const StartBotBody = zod.object({
+  mode: zod.enum(["paper", "live"]).default(startBotBodyModeDefault),
+});
+
 export const StartBotResponse = zod.object({
   isRunning: zod.boolean(),
+  executionMode: zod.enum(["paper", "live"]),
   strategy: zod.string(),
   bankroll: zod.number(),
   scanIntervalSeconds: zod.number(),
@@ -205,10 +213,11 @@ export const StartBotResponse = zod.object({
 });
 
 /**
- * @summary Stop the trading bot simulation
+ * @summary Stop the trading bot
  */
 export const StopBotResponse = zod.object({
   isRunning: zod.boolean(),
+  executionMode: zod.enum(["paper", "live"]),
   strategy: zod.string(),
   bankroll: zod.number(),
   scanIntervalSeconds: zod.number(),
@@ -216,6 +225,18 @@ export const StopBotResponse = zod.object({
   totalSignalsGenerated: zod.number(),
   totalTradesExecuted: zod.number(),
   uptime: zod.number().nullable().describe("Seconds since start"),
+});
+
+/**
+ * @summary Check Canon/Polymarket readiness for live trading
+ */
+export const GetBotReadinessResponse = zod.object({
+  walletReady: zod.boolean(),
+  walletAddress: zod.string().nullable(),
+  onboardReady: zod.boolean(),
+  sidecarReady: zod.boolean(),
+  usdceBalance: zod.number(),
+  errors: zod.array(zod.string()),
 });
 
 /**

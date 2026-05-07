@@ -15,6 +15,10 @@ export const tradesTable = pgTable("trades", {
   pnl: real("pnl"),
   pnlPercent: real("pnl_percent"),
   status: text("status").notNull().default("open"),
+  // Live trading fields
+  executionMode: text("execution_mode").notNull().default("paper"),
+  clobOrderId: text("clob_order_id"),
+  clobTokenId: text("clob_token_id"),
   openedAt: timestamp("opened_at", { withTimezone: true }).notNull().defaultNow(),
   closedAt: timestamp("closed_at", { withTimezone: true }),
 });

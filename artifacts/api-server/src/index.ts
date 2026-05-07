@@ -2,6 +2,7 @@ import app from "./app";
 import { logger } from "./lib/logger";
 import { syncPolymarketMarkets } from "./lib/polymarket";
 import { db, botLogsTable, botStateTable } from "@workspace/db";
+import { pool } from "@workspace/db";
 import { eq } from "drizzle-orm";
 
 const rawPort = process.env["PORT"];
@@ -18,6 +19,32 @@ if (Number.isNaN(port) || port <= 0) {
   throw new Error(`Invalid PORT value: "${rawPort}"`);
 }
 
+async function runMigrations(): Promise<void> {
+  const client = await pool.connect();
+  try {
+    // Add columns introduced in the live-trading update — all idempotent
+    await client.query(`
+      ALTER TABLE markets
+        ADD COLUMN IF NOT EXISTS condition_id  text,
+        ADD COLUMN IF NOT EXISTS yes_token_id  text,
+        ADD COLUMN IF NOT EXISTS no_token_id   text
+    `);
+    await client.query(`
+      ALTER TABLE trades
+        ADD COLUMN IF NOT EXISTS execution_mode text NOT NULL DEFAULT 'paper',
+        ADD COLUMN IF NOT EXISTS clob_order_id  text,
+        ADD COLUMN IF NOT EXISTS clob_token_id  text
+    `);
+    await client.query(`
+      ALTER TABLE bot_state
+        ADD COLUMN IF NOT EXISTS execution_mode text NOT NULL DEFAULT 'paper'
+    `);
+    logger.info("Schema migrations applied");
+  } finally {
+    client.release();
+  }
+}
+
 app.listen(port, async (err) => {
   if (err) {
     logger.error({ err }, "Error listening on port");
@@ -26,12 +53,15 @@ app.listen(port, async (err) => {
 
   logger.info({ port }, "Server listening");
 
+  await runMigrations();
+
   // Ensure bot_state row exists
   const existing = await db.select().from(botStateTable).where(eq(botStateTable.id, 1));
   if (existing.length === 0) {
     await db.insert(botStateTable).values({
       id: 1,
       isRunning: false,
+      executionMode: "paper",
       strategy: "series_arbitrage_nba_stats",
       bankroll: 1000,
       scanIntervalSeconds: 30,
